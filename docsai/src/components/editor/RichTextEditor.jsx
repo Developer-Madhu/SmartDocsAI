@@ -10,12 +10,15 @@ import EditorToolbar from './EditorToolbar';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import { useEffect, useRef, useState } from 'react';
+import { API_ENDPOINTS } from '../../config';
 
 const TYPING_SPEED = 18; // ms per character
 
-const RichTextEditor = ({ content, onChange, onSave, isSaving, isGenerating }) => {
+const RichTextEditor = ({ content = '', onChange, onSave, isSaving, isGenerating }) => {
   const [animatedContent, setAnimatedContent] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [isGeneratingContent, setIsGeneratingContent] = useState(false);
   const editorRef = useRef(null);
   const scrollRef = useRef(null);
 
@@ -25,6 +28,14 @@ const RichTextEditor = ({ content, onChange, onSave, isSaving, isGenerating }) =
         heading: {
           levels: [1, 2, 3],
         },
+        bulletList: {
+          keepMarks: true,
+          keepAttributes: true,
+        },
+        orderedList: {
+          keepMarks: true,
+          keepAttributes: true,
+        },
       }),
       Placeholder.configure({
         placeholder: 'Start typing or use AI to generate content...',
@@ -33,18 +44,74 @@ const RichTextEditor = ({ content, onChange, onSave, isSaving, isGenerating }) =
       Color,
       FontFamily,
       FontSize,
-      TextAlign.configure({ types: ['heading', 'paragraph'] }),
+      TextAlign.configure({ 
+        types: ['heading', 'paragraph'],
+        defaultAlignment: 'left',
+      }),
     ],
-    content,
+    content: content || '',
     onUpdate: ({ editor }) => {
-      onChange(editor.getHTML());
+      if (onChange) {
+        const html = editor.getHTML()
+          .replace(/\n\s*\n\s*\n/g, '\n\n')
+          .replace(/\s{2,}/g, ' ')
+          .replace(/>\s+</g, '><')
+          .replace(/\s+$/gm, '');
+        onChange(html);
+      }
     },
     editorProps: {
       attributes: {
         class: 'min-h-[500px] p-4 border rounded-lg shadow-sm focus:outline-none bg-white',
       },
+      handleDOMEvents: {
+        keydown: (view, event) => {
+          if (event.key === 'Tab') {
+            event.preventDefault();
+            if (event.shiftKey) {
+              editor.commands.liftListItem('listItem');
+            } else {
+              editor.commands.sinkListItem('listItem');
+            }
+            return true;
+          }
+          return false;
+        },
+      },
     },
   });
+
+  const handleGenerateContent = async () => {
+    if (!aiPrompt.trim()) return;
+
+    setIsGeneratingContent(true);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(API_ENDPOINTS.AI.GENERATE, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ prompt: aiPrompt }),
+        credentials: 'include'
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to generate content');
+      }
+
+      const data = await response.json();
+      if (onChange) {
+        onChange(data.content);
+      }
+      setAiPrompt('');
+    } catch (error) {
+      console.error('Generation error:', error);
+    } finally {
+      setIsGeneratingContent(false);
+    }
+  };
 
   // Typing animation for AI-generated content
   useEffect(() => {
@@ -54,7 +121,19 @@ const RichTextEditor = ({ content, onChange, onSave, isSaving, isGenerating }) =
       setAnimatedContent('');
       const interval = setInterval(() => {
         i++;
-        setAnimatedContent(content.slice(0, i));
+        const partialContent = content.slice(0, i);
+        setAnimatedContent(partialContent);
+        if (editor) {
+          const cleanedContent = partialContent
+            .replace(/\n\s*\n\s*\n/g, '\n\n')
+            .replace(/\s{2,}/g, ' ')
+            .replace(/>\s+</g, '><')
+            .replace(/\s+$/gm, '');
+          editor.commands.setContent(cleanedContent, false, {
+            preserveWhitespace: 'full',
+            preserveStyles: true
+          });
+        }
         if (i >= content.length) {
           clearInterval(interval);
           setIsTyping(false);
@@ -62,18 +141,51 @@ const RichTextEditor = ({ content, onChange, onSave, isSaving, isGenerating }) =
       }, TYPING_SPEED);
       return () => clearInterval(interval);
     } else if (!isGenerating && !isTyping) {
-      setAnimatedContent(content);
+      setAnimatedContent(content || '');
     }
-    // eslint-disable-next-line
-  }, [content, isGenerating]);
+  }, [content, isGenerating, editor, animatedContent, isTyping]);
 
   // Update editor content when content prop changes (except during typing)
   useEffect(() => {
     if (editor && !isTyping && content !== editor.getHTML()) {
-      editor.commands.setContent(content);
+      const cleanedContent = (content || '')
+        .replace(/\n\s*\n\s*\n/g, '\n\n')
+        .replace(/\s{2,}/g, ' ')
+        .replace(/>\s+</g, '><')
+        .replace(/\s+$/gm, '');
+      editor.commands.setContent(cleanedContent, false, {
+        preserveWhitespace: 'full',
+        preserveStyles: true
+      });
     }
-    // eslint-disable-next-line
   }, [content, editor, isTyping]);
+
+  // Add keyboard shortcuts for formatting
+  useEffect(() => {
+    if (!editor) return;
+
+    const handleKeyDown = (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'b') {
+        event.preventDefault();
+        editor.chain().focus().toggleBold().run();
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key === 'i') {
+        event.preventDefault();
+        editor.chain().focus().toggleItalic().run();
+      }
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === '8') {
+        event.preventDefault();
+        editor.chain().focus().toggleBulletList().run();
+      }
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === '7') {
+        event.preventDefault();
+        editor.chain().focus().toggleOrderedList().run();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [editor]);
 
   // Scroll to bottom when content grows
   useEffect(() => {
@@ -87,41 +199,148 @@ const RichTextEditor = ({ content, onChange, onSave, isSaving, isGenerating }) =
     const titleInput = document.querySelector('input[type="text"]');
     const fileName = titleInput ? `${titleInput.value || 'document'}.pdf` : 'document.pdf';
     const doc = new jsPDF('p', 'pt', 'a4');
-    const htmlContent = editor ? editor.getHTML() : '';
-    // Create a hidden container for styled export
+    
+    // Get the editor's content with all styles
+    const editorElement = editorRef.current;
+    if (!editorElement) return;
+    
+    // Create a container that will hold our content
     const container = document.createElement('div');
-    container.innerHTML = htmlContent;
+    container.style.position = 'absolute';
+    container.style.left = '-9999px';
+    container.style.top = '-9999px';
+    container.style.width = '700px';
     container.style.padding = '32px';
-    container.style.fontFamily = 'Inter, Arial, sans-serif';
-    container.style.color = '#22223b';
-    container.style.maxWidth = '700px';
-    // Custom styles for headings, paragraphs, lists
+    container.style.backgroundColor = '#ffffff';
+    
+    // Clone the editor content
+    const contentClone = editorElement.cloneNode(true);
+    
+    // Get all computed styles from the original editor
+    const originalStyles = window.getComputedStyle(editorElement);
+    const computedStyles = {
+      fontFamily: originalStyles.fontFamily,
+      fontSize: originalStyles.fontSize,
+      lineHeight: originalStyles.lineHeight,
+      color: originalStyles.color,
+      backgroundColor: originalStyles.backgroundColor,
+    };
+    
+    // Apply computed styles to the container
+    Object.entries(computedStyles).forEach(([property, value]) => {
+      container.style[property] = value;
+    });
+    
+    // Add the cloned content
+    container.appendChild(contentClone);
+    
+    // Create a style element to ensure all editor styles are preserved
     const style = document.createElement('style');
     style.innerHTML = `
-      h1, h2, h3 { color: #3b82f6; font-family: inherit; margin-top: 1.5em; margin-bottom: 0.5em; }
-      h1 { font-size: 2.2em; font-weight: bold; }
-      h2 { font-size: 1.5em; font-weight: bold; }
-      h3 { font-size: 1.2em; font-weight: bold; }
-      p { font-size: 1.05em; margin: 0.5em 0; line-height: 1.7; }
-      ul, ol { margin: 1em 0 1em 2em; }
-      li { margin-bottom: 0.3em; }
-      strong { color: #d72660; }
-      em { color: #4361ee; }
-      body { background: #fff; }
+      .ProseMirror {
+        all: inherit !important;
+        font-family: ${computedStyles.fontFamily} !important;
+        font-size: ${computedStyles.fontSize} !important;
+        line-height: ${computedStyles.lineHeight} !important;
+        color: ${computedStyles.color} !important;
+        background-color: ${computedStyles.backgroundColor} !important;
+      }
+      .ProseMirror * {
+        font-family: inherit !important;
+        font-size: inherit !important;
+        line-height: inherit !important;
+        color: inherit !important;
+        background-color: inherit !important;
+      }
+      .ProseMirror p {
+        margin: 0.5em 0 !important;
+        white-space: pre-wrap !important;
+      }
+      .ProseMirror h1, .ProseMirror h2, .ProseMirror h3 {
+        margin: 1em 0 0.5em 0 !important;
+        font-weight: bold !important;
+      }
+      .ProseMirror ul, .ProseMirror ol {
+        margin: 0.5em 0 0.5em 2em !important;
+        padding-left: 1em !important;
+      }
+      .ProseMirror li {
+        margin: 0.3em 0 !important;
+        display: list-item !important;
+      }
+      .ProseMirror blockquote {
+        margin: 1em 0 !important;
+        padding-left: 1em !important;
+        border-left: 3px solid #ccc !important;
+      }
+      .ProseMirror pre {
+        margin: 1em 0 !important;
+        padding: 1em !important;
+        background-color: #f5f5f5 !important;
+        border-radius: 4px !important;
+      }
+      .ProseMirror code {
+        font-family: monospace !important;
+        background-color: #f5f5f5 !important;
+        padding: 0.2em 0.4em !important;
+        border-radius: 3px !important;
+      }
+      .ProseMirror img {
+        max-width: 100% !important;
+        height: auto !important;
+        margin: 1em 0 !important;
+      }
+      .ProseMirror table {
+        border-collapse: collapse !important;
+        margin: 1em 0 !important;
+        width: 100% !important;
+      }
+      .ProseMirror th, .ProseMirror td {
+        border: 1px solid #ddd !important;
+        padding: 0.5em !important;
+      }
+      .ProseMirror th {
+        background-color: #f5f5f5 !important;
+      }
     `;
     container.appendChild(style);
     document.body.appendChild(container);
-    await doc.html(container, {
-      x: 32,
-      y: 32,
-      width: 530,
-      windowWidth: 800,
-      html2canvas: { scale: 0.8 },
-      callback: function (doc) {
-        doc.save(fileName);
-        document.body.removeChild(container);
-      },
-    });
+
+    try {
+      // Wait for fonts to load
+      await document.fonts.ready;
+      
+      // Use html2canvas with improved settings
+      const canvas = await html2canvas(container, {
+        scale: 2, // Higher scale for better quality
+        useCORS: true,
+        logging: false,
+        allowTaint: true,
+        backgroundColor: '#ffffff',
+        windowWidth: 800,
+        onclone: (clonedDoc) => {
+          // Ensure all styles are applied in the cloned document
+          const clonedContainer = clonedDoc.querySelector('div');
+          if (clonedContainer) {
+            Object.entries(computedStyles).forEach(([property, value]) => {
+              clonedContainer.style[property] = value;
+            });
+          }
+        }
+      });
+
+      // Calculate dimensions to maintain aspect ratio
+      const imgWidth = 530;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      
+      // Add the image to the PDF
+      doc.addImage(canvas.toDataURL('image/png'), 'PNG', 32, 32, imgWidth, imgHeight);
+      doc.save(fileName);
+    } catch (error) {
+      console.error('Export failed:', error);
+    } finally {
+      document.body.removeChild(container);
+    }
   };
 
   return (
@@ -132,9 +351,30 @@ const RichTextEditor = ({ content, onChange, onSave, isSaving, isGenerating }) =
         onSave={onSave}
         isSaving={isSaving}
       />
+      <div className="p-4 border-b border-gray-200">
+        <div className="flex space-x-2">
+          <input
+            type="text"
+            value={aiPrompt}
+            onChange={(e) => setAiPrompt(e.target.value)}
+            placeholder="Enter a prompt for AI to generate content..."
+            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <button
+            onClick={handleGenerateContent}
+            disabled={isGeneratingContent || !aiPrompt.trim()}
+            className={`px-4 py-2 rounded-lg text-white font-medium transition-colors
+              ${isGeneratingContent || !aiPrompt.trim()
+                ? 'bg-gray-400 cursor-not-allowed'
+                : 'bg-blue-600 hover:bg-blue-700'
+              }`}
+          >
+            {isGeneratingContent ? 'Generating...' : 'Generate'}
+          </button>
+        </div>
+      </div>
       <div ref={scrollRef} className="flex-1 overflow-y-auto max-h-[70vh] relative px-2 py-2">
         <div className="prose prose-sm sm:prose lg:prose-lg xl:prose-2xl mx-auto min-h-[500px]">
-          {/* Animated typing effect for AI generation */}
           {isGenerating || isTyping ? (
             <div className="whitespace-pre-line text-blue-900 font-mono text-lg animate-pulse">
               {animatedContent}
