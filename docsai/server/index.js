@@ -14,11 +14,12 @@ app.use(cors());
 app.use(express.json());
 
 // Gemini AI configuration
-const genAI = new GoogleGenerativeAI("AIzaSyBLvHRUeAQ7lOZeTpDC8BZcOlOeIncBfto");
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const GEMINI_API_KEY = "AIzaSyAaNBPxwmC9E7WYklguCZdk47he1fU4H0c";
+const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
 // MongoDB connection
-mongoose.connect('mongodb://localhost:27017/smartdocs')
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/smartdocs')
   .then(() => console.log('Connected to MongoDB'))
   .catch((err) => console.error('MongoDB connection error:', err));
 
@@ -43,27 +44,74 @@ app.post('/api/ai/generate', async (req, res) => {
       return res.status(400).json({ error: 'Prompt is required' });
     }
 
-    const chat = model.startChat({
-      history: [
-        {
-          role: "user",
-          parts: "You are a professional document editor. Help users create and edit documents based on their prompts. Provide clear, well-structured responses that maintain the document's formatting and style.",
-        },
-      ],
-    });
+    // Create a more focused system prompt
+    const systemPrompt = `You are a document editor assistant. Your task is to generate content based on user requests.
+    Important rules:
+    1. ONLY generate the requested content, nothing else
+    2. Do not add explanations, introductions, or conclusions
+    3. Do not mention that you are an AI or assistant
+    4. Use proper HTML formatting for the content
+    5. Keep the tone professional and consistent
+    6. If asked to modify existing content, only return the modified version
+    7. If asked to add new content, only return the new content`;
 
-    const result = await chat.sendMessage(
-      `Current content: ${currentContent || ''}\n\nUser request: ${prompt}`
-    );
-    const response = await result.response;
-    const generatedContent = response.text();
+    try {
+      const chat = model.startChat({
+        history: [
+          {
+            role: "user",
+            parts: systemPrompt,
+          },
+        ],
+      });
 
-    res.json({ content: generatedContent });
+      // Construct a focused prompt for the AI
+      const fullPrompt = `
+      Current document content:
+      ${currentContent || 'No existing content'}
+
+      User request: ${prompt}
+
+      Instructions:
+      1. Generate ONLY the requested content
+      2. Use proper HTML formatting
+      3. Do not add any explanations or additional text
+      4. If modifying existing content, return only the modified version
+      5. If adding new content, return only the new content`;
+
+      const result = await chat.sendMessage(fullPrompt);
+      const response = await result.response;
+      let generatedContent = response.text();
+
+      // Clean up the response: remove code block markers and language tags
+      generatedContent = generatedContent
+        .replace(/^```[a-zA-Z]*\n?/m, '') // Remove leading ``` or ```html
+        .replace(/\n?```$/m, '')         // Remove trailing ```
+        .replace(/^Here's|^Here is|^I'll|^I will|^Let me|^I can|^I've|^I have|^Here's what|^Here's the|^Here is the|^Here is what/gi, '')
+        .replace(/^Generated content:|^Content:|^Response:|^Here's the content:|^Here's the response:/gi, '')
+        .trim();
+
+      // Ensure proper HTML formatting
+      if (!generatedContent.includes('<')) {
+        // If the content doesn't contain HTML tags, wrap it in appropriate tags
+        generatedContent = `<p>${generatedContent.replace(/\n\n/g, '</p><p>')}</p>`;
+      }
+
+      // If there's existing content, append the new content
+      const finalContent = currentContent 
+        ? `${currentContent}\n\n${generatedContent}`
+        : generatedContent;
+
+      res.json({ content: finalContent });
+    } catch (aiError) {
+      console.error('AI Generation Error:', aiError);
+      throw new Error(`AI Generation failed: ${aiError.message}`);
+    }
   } catch (error) {
     console.error('Error generating content:', error);
     res.status(500).json({ 
       error: 'Failed to generate content',
-      details: error.message 
+      details: error.message || 'An unexpected error occurred'
     });
   }
 });
