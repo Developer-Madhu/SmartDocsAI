@@ -1,6 +1,11 @@
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
+import TextAlign from '@tiptap/extension-text-align';
+import Color from '@tiptap/extension-color';
+import TextStyle from '@tiptap/extension-text-style';
+import FontFamily from '@tiptap/extension-font-family';
+import { FontSize } from './FontSize';
 import EditorToolbar from './EditorToolbar';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -24,6 +29,11 @@ const RichTextEditor = ({ content, onChange, onSave, isSaving, isGenerating }) =
       Placeholder.configure({
         placeholder: 'Start typing or use AI to generate content...',
       }),
+      TextStyle,
+      Color,
+      FontFamily,
+      FontSize,
+      TextAlign.configure({ types: ['heading', 'paragraph'] }),
     ],
     content,
     onUpdate: ({ editor }) => {
