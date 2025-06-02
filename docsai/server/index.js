@@ -104,8 +104,23 @@ app.post('/api/ai/generate', async (req, res) => {
 
       res.json({ content: finalContent });
     } catch (aiError) {
+      // Handle Gemini API errors and provide user-friendly messages
+      let userMessage = 'Failed to generate content.';
+      if (aiError.message) {
+        if (aiError.message.includes('429') || aiError.message.toLowerCase().includes('overload')) {
+          userMessage = 'The AI model is currently overloaded. Please try again in a few moments.';
+        } else if (aiError.message.toLowerCase().includes('api key') || aiError.message.toLowerCase().includes('unauthorized') || aiError.message.toLowerCase().includes('invalid')) {
+          userMessage = 'Your AI API key is invalid or expired. Please check your API key.';
+        } else if (aiError.message.toLowerCase().includes('quota')) {
+          userMessage = 'Your API quota has been exceeded. Please check your usage or try again later.';
+        } else if (aiError.message.toLowerCase().includes('network')) {
+          userMessage = 'Network error while connecting to the AI model. Please check your connection.';
+        } else if (aiError.message.toLowerCase().includes('timeout')) {
+          userMessage = 'The AI model took too long to respond. Please try again.';
+        }
+      }
       console.error('AI Generation Error:', aiError);
-      throw new Error(`AI Generation failed: ${aiError.message}`);
+      return res.status(503).json({ error: userMessage, details: aiError.message });
     }
   } catch (error) {
     console.error('Error generating content:', error);
